@@ -19,6 +19,29 @@ import { FRAMES, TOTAL, TARGET, NSLIP, NMSG, RATE } from './timeline';
 
 export type RefMap = Record<string, HTMLElement>;
 
+// 2026-09-26 — responsive pass. Two design canvases, picked from the
+// viewport's aspect ratio (user's choice: tablet follows mobile/desktop
+// rather than getting its own canvas):
+//   - 'portrait'  → the original 1080×1920 mobile canvas (phones, tablets
+//                   held upright)
+//   - 'landscape' → the 1920×1080 desktop canvas ported from
+//                   `Prototipe 01-14 WebGL 90s Desktop.dc.html` (desktops,
+//                   laptops, tablets held sideways): the 3D scene sits in the
+//                   LEFT half (camera shifted right, see paint()), text/UI
+//                   panels in the RIGHT half.
+// Either canvas is then scaled uniformly to fit the viewport (fit()).
+export type Layout = 'portrait' | 'landscape';
+
+export function detectLayout(): Layout {
+  if (typeof window === 'undefined') return 'portrait';
+  return window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
+}
+
+export const LAYOUT_SIZE: Record<Layout, { w: number; h: number }> = {
+  portrait: { w: 1080, h: 1920 },
+  landscape: { w: 1920, h: 1080 },
+};
+
 export type SceneControllerOptions = {
   photos?: [string, string]; // two photo URLs — currently unused; frame 03's photos are hardcoded <img> src in StoryboardStage.tsx
   onPhaseChange?: (phase: 'sealed' | 'opening' | 'playing') => void;
@@ -36,6 +59,7 @@ export class SceneController {
   reduced = false;
   envOpen = false;
   scale = 1;
+  layout: Layout = 'portrait';
 
   private opts: SceneControllerOptions;
   private raf = 0;
@@ -48,6 +72,40 @@ export class SceneController {
   private moved = 0;
   private py = 0;
   private dTarget: EventTarget | null = null;
+
+  // 2026-09-20: true while the scrapbook album overlay is open. Used to
+  // fully isolate wheel/touch-drag/keyboard input from the storyboard
+  // timeline while the album modal is up — "Pisahkan control di scrapbook
+  // dengan undangan" (scrolling inside the album was also nudging the
+  // storyboard underneath it). Unlike the frame-13 wishes list (an inline
+  // part of a frame, where scrolling past its own bounds intentionally
+  // chains into nudging the timeline), the scrapbook is a true modal
+  // overlay — nothing should leak through to the timeline while it's open.
+  private scrapOpen = false;
+
+  // 2026-09-26: set by unmount(). React StrictMode (dev) mounts → unmounts →
+  // re-mounts the stage, and the first controller's async setup() used to
+  // carry on after its `await document.fonts.ready` anyway — appending a
+  // second <canvas> and starting a second RAF paint loop that nothing ever
+  // stopped. That "zombie" canvas sat ON TOP of the real one in dev (the
+  // "page has two <canvas> elements" / "canvas rect is offset one canvas
+  // height" quirks noted in the project doc), and it never received layout
+  // changes. setup() now bails out once disposed, and unmount() removes the
+  // canvas it appended.
+  private disposed = false;
+
+  // 2026-09-26: with the dev-only zombie canvas gone (see `disposed`), the
+  // REAL canvas became visible for the first time in dev — revealing that
+  // the 3D paper split (shA/shB pulling apart over the dark `rift`) and the
+  // 26 frame-05 paper slips had never actually been seen while frames 04–06
+  // were tuned: the zombie canvas on top was frozen at t=0 (paper closed).
+  // Every approved look for those frames (the DOM `gapBg` band, message
+  // bubbles, journey dot) was designed over plain, closed paper, and the
+  // real 3D rift (wider, and in portrait offset from the band's -100px
+  // anchor) clashed with it. Off = keeps exactly the look that was approved;
+  // flip to true to bring the 3D split/slips back (they'd then need
+  // re-aligning to the DOM band).
+  static readonly SHOW_3D_SPLIT = false;
 
   private rn!: THREE.WebGLRenderer;
   private sc!: THREE.Scene;
@@ -145,11 +203,13 @@ export class SceneController {
     this.debug = /debug/.test(location.search);
     if (this.debug) (window as unknown as { __stage?: unknown }).__stage = this;
 
+    this.layout = detectLayout();
     this.fit = () => {
       const st = this.r.stage,
         fr = this.r.frame;
       if (!st || !fr) return;
-      this.scale = Math.min(st.clientWidth / 1080, st.clientHeight / 1920);
+      const { w, h } = LAYOUT_SIZE[this.layout];
+      this.scale = Math.min(st.clientWidth / w, st.clientHeight / h);
       fr.style.transform = 'scale(' + this.scale + ')';
       if (this.rn) this.rn.setPixelRatio(cl(this.scale * (window.devicePixelRatio || 1), 0.55, 1.6));
     };
@@ -159,7 +219,53 @@ export class SceneController {
     this.setup();
   }
 
+  // Called by StoryboardStage whenever the viewport flips between portrait
+  // and landscape (after React has re-rendered the DOM overlays for the new
+  // layout). Re-sizes the WebGL canvas/camera to the new design canvas and
+  // re-fits. Safe to call before setup() has created the renderer.
+  setLayout(l: Layout) {
+    const changed = l !== this.layout;
+    this.layout = l;
+    this.applyRendererLayout();
+    this.fit();
+    if (changed && this.ready) {
+      // Envelope wrap height is layout-dependent — re-sync it.
+      if (this.r.envWrap && !this.envOpen) this.r.envWrap.style.height = this.envH() + 'px';
+      try {
+        this.paint(performance.now() / 1000);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private get land() {
+    return this.layout === 'landscape';
+  }
+
+  // Closed-envelope height, per layout (portrait 400 / landscape 300,
+  // matching the mobile/desktop prototypes).
+  envH() {
+    return this.land ? 300 : 400;
+  }
+
+  private applyRendererLayout() {
+    if (!this.rn) return;
+    const { w, h } = LAYOUT_SIZE[this.layout];
+    this.rn.setSize(w, h, false);
+    this.rn.domElement.style.cssText = `width:${w}px;height:${h}px;display:block`;
+    this.cam.aspect = w / h;
+    this.cam.updateProjectionMatrix();
+    // Landscape frames a much wider slice of the paper, so widen the key
+    // light's shadow frustum to match (desktop prototype: ±12 vs ±6).
+    const sx = this.land ? 12 : 6;
+    this.key.shadow.camera.left = -sx;
+    this.key.shadow.camera.right = sx;
+    this.key.shadow.camera.updateProjectionMatrix();
+  }
+
   unmount() {
+    this.disposed = true;
     cancelAnimationFrame(this.raf);
     window.removeEventListener('resize', this.fit);
     window.removeEventListener('mousemove', this.onMove as EventListener);
@@ -167,7 +273,10 @@ export class SceneController {
     window.removeEventListener('blur', this.onUp);
     window.removeEventListener('keydown', this.onKey as EventListener);
     document.removeEventListener('visibilitychange', this.onVis);
-    if (this.rn) this.rn.dispose();
+    if (this.rn) {
+      this.rn.domElement.remove();
+      this.rn.dispose();
+    }
   }
 
   private scrollable(target: EventTarget | null, dy: number): boolean {
@@ -187,6 +296,11 @@ export class SceneController {
 
   private bindInput() {
     this.onWheel = (e: WheelEvent) => {
+      // 2026-09-20: while the scrapbook modal is open, never nudge the
+      // storyboard underneath it — let the browser's native wheel
+      // scrolling handle the album's own scroll area untouched (no
+      // preventDefault(), so native scroll still works normally).
+      if (this.scrapOpen) return;
       if (this.scrollable(e.target, e.deltaY)) return;
       this.nudge(e.deltaY * 0.026);
       e.preventDefault();
@@ -205,6 +319,8 @@ export class SceneController {
       const d = this.py - y;
       this.moved += Math.abs(d);
       this.py = y;
+      // 2026-09-20: same isolation as onWheel above, for touch/mouse drag.
+      if (this.scrapOpen) return;
       if (this.scrollable(this.dTarget, d)) return;
       if (this.moved < 14) return;
       this.nudge(d * 0.05);
@@ -231,6 +347,14 @@ export class SceneController {
         activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT' ||
         (document.activeElement as HTMLElement | null)?.isContentEditable;
       if (activeEditable) return;
+      // 2026-09-20: while the scrapbook modal is open, playback shortcuts
+      // (space/arrows/r) must not reach the storyboard underneath it —
+      // same "pisahkan control" isolation as the wheel/drag guards above.
+      // Escape still closes the album, for a normal modal-dismiss habit.
+      if (this.scrapOpen) {
+        if (e.key === 'Escape') this.onScrapClose();
+        return;
+      }
       const k = e.key;
       if (this.phase === 'sealed') {
         if (k === ' ' || k === 'Enter') {
@@ -274,6 +398,7 @@ export class SceneController {
     } catch {
       /* ignore */
     }
+    if (this.disposed) return;
 
     // preserveDrawingBuffer: true works around a known Chromium/Intel-GPU
     // compositing bug where a WebGL canvas inside a CSS-transformed (scaled)
@@ -282,21 +407,21 @@ export class SceneController {
     // canvas area just shows through to whatever is behind it. Small GPU
     // memory cost, no visible downside for a scene this size.
     const rn = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    rn.setSize(1080, 1920, false);
+    rn.setSize(LAYOUT_SIZE[this.layout].w, LAYOUT_SIZE[this.layout].h, false);
     rn.setPixelRatio(cl(this.scale * (window.devicePixelRatio || 1), 0.55, 1.6));
     rn.shadowMap.enabled = true;
     rn.shadowMap.type = T.PCFSoftShadowMap;
     rn.toneMapping = T.ACESFilmicToneMapping;
     rn.toneMappingExposure = 1.05;
     const cv = rn.domElement;
-    cv.style.cssText = 'width:1080px;height:1920px;display:block';
+    cv.style.cssText = `width:${LAYOUT_SIZE[this.layout].w}px;height:${LAYOUT_SIZE[this.layout].h}px;display:block`;
     this.r.canvasWrap.appendChild(cv);
     this.rn = rn;
 
     const sc = new T.Scene();
     sc.background = new T.Color('#100C08');
     sc.fog = new T.Fog('#140F0A', 22, 48);
-    const cam = new T.PerspectiveCamera(38, 1080 / 1920, 0.1, 120);
+    const cam = new T.PerspectiveCamera(38, LAYOUT_SIZE[this.layout].w / LAYOUT_SIZE[this.layout].h, 0.1, 120);
     cam.position.set(0, 0, 12);
     this.sc = sc;
     this.cam = cam;
@@ -319,8 +444,13 @@ export class SceneController {
     sc.add(rim);
     this.amb = amb;
     this.key = key;
+    this.applyRendererLayout();
 
-    const back = new T.Mesh(new T.PlaneGeometry(70, 70), new T.MeshBasicMaterial({ color: '#1C1510' }));
+    // Back plane / rift / paper widened to the desktop prototype's sizes
+    // (2026-09-26) so the same meshes cover both the 1080-wide portrait and
+    // 1920-wide landscape framing — the extra width is simply off-screen in
+    // portrait.
+    const back = new T.Mesh(new T.PlaneGeometry(120, 90), new T.MeshBasicMaterial({ color: '#1C1510' }));
     back.position.z = -9;
     sc.add(back);
 
@@ -337,7 +467,7 @@ export class SceneController {
     rx.fillRect(0, 0, 512, 256);
     const riftTex = new T.CanvasTexture(riftCan);
     riftTex.colorSpace = T.SRGBColorSpace;
-    const rift = new T.Mesh(new T.PlaneGeometry(14, 6.4), new T.MeshBasicMaterial({ map: riftTex, toneMapped: false }));
+    const rift = new T.Mesh(new T.PlaneGeometry(26, 6.4), new T.MeshBasicMaterial({ map: riftTex, toneMapped: false }));
     rift.position.z = -2.2;
     sc.add(rift);
     this.rift = rift;
@@ -358,7 +488,7 @@ export class SceneController {
       return g;
     };
     const mk = (cy: number) => {
-      const m = new T.Mesh(warp(new T.PlaneGeometry(11, 6.6, 44, 26)), paperMat);
+      const m = new T.Mesh(warp(new T.PlaneGeometry(32, 6.6, 96, 26)), paperMat);
       m.position.set(0, cy, 0);
       m.receiveShadow = true;
       // Cast too (2026-09-12, addressing "halaman seperti terbagi 2" — the
@@ -473,6 +603,7 @@ export class SceneController {
           console.error('paint', err);
         }
       }
+      if (this.disposed) return;
       this.raf = requestAnimationFrame(loop);
     };
     this.paint(0);
@@ -579,11 +710,18 @@ export class SceneController {
     // split "still has no animation"; the drift/crack was real but too
     // subtle to read as motion) — 50% more separation, so the crack and the
     // label drift it drives are both clearly visible over the frame's ~8s.
-    let gap = 2.4 * ez(sg(t, 16.5, 30));
+    // Landscape keeps the desktop prototype's original 1.6 amplitude: its
+    // text column sits beside the crack (not above/below it), and the wider
+    // 2.4 split would run the crack under the frame-04/05 paragraphs.
+    const gapAmp = this.land ? 1.6 : 2.4;
+    let gap = gapAmp * ez(sg(t, 16.5, 30));
     gap *= 1 - ez(sg(t, 60.6, 63.2));
-    this.shA.position.y = 3.27 + gap / 2;
-    this.shB.position.y = -3.27 - gap / 2;
-    const breathe = cl(gap / 2.4, 0, 1);
+    // 2026-09-26: the 3D paper split + frame-05 slips are switched off (see
+    // SHOW_3D_SPLIT). `gap` itself still drives every DOM element below.
+    const gap3d = SceneController.SHOW_3D_SPLIT ? gap : 0;
+    this.shA.position.y = 3.27 + gap3d / 2;
+    this.shB.position.y = -3.27 - gap3d / 2;
+    const breathe = cl(gap / gapAmp, 0, 1);
     this.shA.rotation.z = 0.006 * breathe * Math.sin(clock * 0.3);
     this.shB.rotation.z = -0.006 * breathe * Math.sin(clock * 0.34);
     // Tint the crack background warm→cool as it opens (2026-09-12 — see the
@@ -607,7 +745,11 @@ export class SceneController {
     camZ = lp(camZ, 11.5, ez(sg(t, 60.5, 64.5)));
     const info = sg(t, 78, 80);
     camZ += info * (0.55 * ez(sg(t, 79, 138)) + 0.06 * Math.sin(clock * 0.12));
-    this.cam.position.set(Math.sin(clock * 0.16) * 0.03, camY + Math.sin(clock * 0.21) * 0.03, camZ);
+    // Landscape: shift the camera right by camZ·0.3065 (desktop prototype) so
+    // the world origin — paper crack, slips — lands at the centre of the
+    // LEFT half of the 1920-wide canvas, leaving the right half for text.
+    const camX = this.land ? camZ * 0.3065 : 0;
+    this.cam.position.set(camX + Math.sin(clock * 0.16) * 0.03, camY + Math.sin(clock * 0.21) * 0.03, camZ);
     this.cam.rotation.x = camRX;
 
     const lum = 1 - 0.38 * ez(sg(t, 16.5, 21.5)) + 0.38 * ez(sg(t, 34, 46)) + 0.16 * ez(sg(t, 62, 68));
@@ -625,7 +767,10 @@ export class SceneController {
     const oCik = sg(t, 18, 20.5) - sg(t, 59.5, 61.5);
     r.labCik.style.opacity = oCik.toFixed(3);
     r.labSby.style.opacity = oCik.toFixed(3);
-    const gapPx = gap * 130;
+    // World-units → design-px. Portrait keeps its long-tuned 130; landscape
+    // uses ~113, which is what one world unit actually measures at the paper
+    // plane on the 1080-tall canvas, so the DOM band sits over the 3D crack.
+    const gapPx = gap * (this.land ? 113 : 130);
     // Base offset 70 (up from 40, 2026-09-12 — user said Cikarang/Surabaya
     // "masih terlalu dekat" even after the wider `gap`): this is the
     // distance from center the labels sit at BEFORE any crack-widening is
@@ -746,7 +891,7 @@ export class SceneController {
       m.rotation.y = u * 1.6 * side;
       const mat = m.material as THREE.MeshStandardMaterial;
       mat.opacity = eo(cl(u / 0.22, 0, 1)) * (1 - ez(cl((u - 0.68) / 0.32, 0, 1))) * (1 - park);
-      m.visible = mat.opacity > 0.004;
+      m.visible = SceneController.SHOW_3D_SPLIT && mat.opacity > 0.004;
       m.castShadow = mat.opacity > 0.12;
     }
 
@@ -899,7 +1044,24 @@ export class SceneController {
     const monoFadeOut = 1 - sg(t, 77, 79.5);
     const monoObjLife = sg(t, 62.4, 63.4) * monoFadeOut;
     const monoRevealEl = r.monoReveal;
-    if (monoRevealEl) monoRevealEl.style.opacity = monoObjLife.toFixed(3);
+    // 2026-09-26: frame-07 photo slot (concept doc: "slot di frame ini
+    // menunggu satu foto baru"). Once the monogram has fully assembled
+    // (~t=67.7) it shrinks into a small crest at the top of the scene area
+    // and the couple photo (`photo7`) rises in beneath it. Portrait: crest
+    // centre moves from y≈860 to ≈290 of the 1920 canvas; landscape: from
+    // the centre of the left half (y 540) to ≈170.
+    const crest = ez(sg(t, 68.2, 70.2));
+    if (monoRevealEl) {
+      monoRevealEl.style.opacity = monoObjLife.toFixed(3);
+      const lift = this.land ? -370 : -570;
+      monoRevealEl.style.transform = `translateY(${(lift * crest).toFixed(1)}px) scale(${lp(1, 0.3, crest).toFixed(3)})`;
+    }
+    if (r.photo7) {
+      const pIn = eo(sg(t, 70.1, 72.2));
+      const o7p = pIn * (1 - sg(t, 76.5, 78.5));
+      r.photo7.style.opacity = o7p.toFixed(3);
+      r.photo7.style.transform = `translateY(${lp(34, 0, pIn).toFixed(1)}px) rotate(-1.2deg)`;
+    }
     const parts = this.monoRevealParts;
     if (parts.ring) parts.ring.style.opacity = eo(sg(t, 63, 65)).toFixed(3);
     if (parts.laurelL) parts.laurelL.style.opacity = eo(sg(t, 63.8, 65.8)).toFixed(3);
@@ -948,6 +1110,11 @@ export class SceneController {
       this.wasDark = dark;
       const ink = dark ? 'rgba(240,228,200,.75)' : 'rgba(90,72,48,.7)';
       r.hudNo.style.color = r.hudLab.style.color = ink;
+      // Letterbox area around the canvas (tablet portrait sides, odd-ratio
+      // desktop bars) follows the closing frame's dark palette too.
+      r.stage.style.background = dark
+        ? 'radial-gradient(circle at 50% 40%,#2A2319,#15110B)'
+        : 'radial-gradient(circle at 50% 40%,#F4EEE3,#E2D6C1)';
       r.hudTrackBg.style.background = dark ? 'rgba(240,228,200,.22)' : 'rgba(122,95,53,.2)';
       r.hudBar.style.background = dark ? '#D9BA80' : '#B8935A';
       [r.pp, r.resume, r.restart].forEach((b) => {
@@ -966,11 +1133,29 @@ export class SceneController {
     }
     r.hudBar.style.width = ((t / TOTAL) * 100).toFixed(2) + '%';
 
-    const showResume = !this.auto && this.idle > 6 && t < TOTAL && this.phase === 'playing';
+    // 2026-09-20: "hide semua control undangan yang muncul seperti tombol
+    // play dan button resume autoplay" — while the scrapbook album is open,
+    // the whole bottom HUD cluster (seek bar/frame label, play/pause,
+    // resume-autoplay, start-over) must not show or be clickable. These
+    // buttons sit after the scrapbook overlay in the DOM (this file has no
+    // z-index anywhere, so later = on top), so without this they visually
+    // poke through above the album's own backdrop.
+    r.hudRow.style.opacity = this.scrapOpen ? '0' : '1';
+    r.hudTrack.style.pointerEvents = this.scrapOpen ? 'none' : 'auto';
+    r.pp.style.opacity = this.scrapOpen ? '0' : '1';
+    r.pp.style.pointerEvents = this.scrapOpen ? 'none' : 'auto';
+    // 2026-09-26: the corner music toggle is an invitation control too —
+    // hidden with the rest while the album is open.
+    if (r.musicBtn) {
+      r.musicBtn.style.opacity = this.scrapOpen ? '0' : '1';
+      r.musicBtn.style.pointerEvents = this.scrapOpen ? 'none' : 'auto';
+    }
+
+    const showResume = !this.auto && this.idle > 6 && t < TOTAL && this.phase === 'playing' && !this.scrapOpen;
     r.resume.style.opacity = showResume ? '1' : '0';
     r.resume.style.pointerEvents = showResume ? 'auto' : 'none';
     r.pp.textContent = this.auto ? '❙❙' : '▶';
-    const done = t >= TOTAL - 0.01 && this.phase === 'playing';
+    const done = t >= TOTAL - 0.01 && this.phase === 'playing' && !this.scrapOpen;
     r.restart.style.opacity = done ? '1' : '0';
     r.restart.style.pointerEvents = done ? 'auto' : 'none';
 
@@ -1035,13 +1220,81 @@ export class SceneController {
 
   onScrapOpen = () => {
     this.pause();
+    this.scrapOpen = true;
     this.r.scrap.style.opacity = '1';
     this.r.scrap.style.pointerEvents = 'auto';
+    if (this.r.scrapScroll) this.r.scrapScroll.scrollTop = 0;
+    this.onScrapScroll();
+    // Hide the invitation's own HUD controls (play/pause, seek bar,
+    // resume-autoplay, start-over) the instant the album opens, rather
+    // than waiting for the next paint() tick to catch up — paint() also
+    // enforces this every frame (see there), this is just belt-and-braces
+    // for zero visible flash.
+    if (this.r.hudRow) this.r.hudRow.style.opacity = '0';
+    if (this.r.hudTrack) this.r.hudTrack.style.pointerEvents = 'none';
+    if (this.r.pp) {
+      this.r.pp.style.opacity = '0';
+      this.r.pp.style.pointerEvents = 'none';
+    }
+    if (this.r.resume) {
+      this.r.resume.style.opacity = '0';
+      this.r.resume.style.pointerEvents = 'none';
+    }
+    if (this.r.restart) {
+      this.r.restart.style.opacity = '0';
+      this.r.restart.style.pointerEvents = 'none';
+    }
+    if (this.r.musicBtn) {
+      this.r.musicBtn.style.opacity = '0';
+      this.r.musicBtn.style.pointerEvents = 'none';
+    }
   };
 
   onScrapClose = () => {
+    this.scrapOpen = false;
     this.r.scrap.style.opacity = '0';
     this.r.scrap.style.pointerEvents = 'none';
+    // Restore the HUD row/play-pause immediately; resume/restart are left
+    // for paint() to re-evaluate on its own next tick, since their
+    // visibility depends on other live conditions (idle time, whether the
+    // storyboard has finished) that this method has no reason to recompute.
+    if (this.r.hudRow) this.r.hudRow.style.opacity = '1';
+    if (this.r.hudTrack) this.r.hudTrack.style.pointerEvents = 'auto';
+    if (this.r.pp) {
+      this.r.pp.style.opacity = '1';
+      this.r.pp.style.pointerEvents = 'auto';
+    }
+    if (this.r.musicBtn) {
+      this.r.musicBtn.style.opacity = '1';
+      this.r.musicBtn.style.pointerEvents = 'auto';
+    }
+  };
+
+  // Scroll-progress bar + "N% through the album" counter for the scrapbook
+  // overlay's own scrollable body (`scrapScroll`, data-scroll="1" — already
+  // picked up for free by the existing scrollable()/onWheel drag-vs-scroll
+  // guard, same mechanism the frame-13 wishes list relies on).
+  onScrapScroll = () => {
+    const sc = this.r.scrapScroll;
+    if (!sc) return;
+    const room = sc.scrollHeight - sc.clientHeight;
+    const p = room > 0 ? cl(sc.scrollTop / room, 0, 1) : 0;
+    if (this.r.scrapBar) this.r.scrapBar.style.width = (p * 100).toFixed(1) + '%';
+    if (this.r.scrapCounter) {
+      this.r.scrapCounter.textContent = p > 0.985 ? "you've reached the end" : Math.round(p * 100) + '% through the album';
+    }
+  };
+
+  // Tap a scrapbook photo to open it fullscreen in the app's existing
+  // lightbox (2026-09-20 — replaces an earlier tap-to-lift-in-place
+  // version per user feedback that "expand" should show the photo fully,
+  // not just scale it slightly where it sits).
+  onScrapCardClick = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    const card = target ? (target.closest('[data-photo]') as HTMLElement | null) : null;
+    if (!card) return;
+    const img = card.querySelector('img');
+    if (img && img.src) this.onGalleryOpen(img.src);
   };
 
   onLbClose = () => {
@@ -1069,7 +1322,7 @@ export class SceneController {
     c.style.opacity = this.envOpen ? '1' : '0';
     c.style.transform = this.envOpen ? 'scale(1)' : 'scale(.9)';
     c.style.pointerEvents = this.envOpen ? 'auto' : 'none';
-    this.r.envWrap.style.height = this.envOpen ? c.scrollHeight + 'px' : '400px';
+    this.r.envWrap.style.height = this.envOpen ? c.scrollHeight + 'px' : this.envH() + 'px';
   };
 
   onToggle = () => {
@@ -1096,11 +1349,15 @@ export class SceneController {
     this.r.envCard.style.opacity = '0';
     this.r.envCard.style.transform = 'scale(.9)';
     this.r.envCard.style.pointerEvents = 'none';
-    this.r.envWrap.style.height = '400px';
+    this.r.envWrap.style.height = this.envH() + 'px';
     this.r.lb.style.opacity = '0';
     this.r.lb.style.pointerEvents = 'none';
+    this.scrapOpen = false;
     this.r.scrap.style.opacity = '0';
     this.r.scrap.style.pointerEvents = 'none';
+    if (this.r.scrapScroll) this.r.scrapScroll.scrollTop = 0;
+    if (this.r.scrapBar) this.r.scrapBar.style.width = '0%';
+    if (this.r.scrapCounter) this.r.scrapCounter.textContent = 'scroll to continue';
     this.r.mapsNote.style.opacity = '0';
     const g = this.r.gate,
       S = this.r.sealDisc,

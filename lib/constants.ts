@@ -27,7 +27,7 @@ export const WEDDING_DATA = {
   },
 
   bankAccounts: [
-    { bank: '', accountNumber: '', accountName: '' },
+    { bank: 'BCA', accountNumber: '8730366966', accountName: 'Reinaldo' },
   ],
 
   giftAddress: {
