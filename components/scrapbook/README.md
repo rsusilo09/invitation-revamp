@@ -20,17 +20,10 @@ the concept doc's 390px-wide preview up to this app's actual 1080-wide
 design canvas.
 
 15 photo slots (opening / portrait pair / 4-photo collage / a favorite
-frame / 5 instant frames / landscape pair) are filled with this project's
-existing sample + couple photos (`photo-01..11.webp` +
-`couple-reinaldo.webp` / `couple-eunike.webp`) — all 13 available images
-are used, with `photo-04.webp` and `photo-05.webp` reused a second time
-(2026-09-20 "15 photos" follow-up: the user asked to expand the album to
-15 slots, but only 13 source files exist on disk, so 2 of the instant
-frames intentionally repeat a photo already shown elsewhere in the album
-as a placeholder) to fill out the 2 extra slots. Final curated scrapbook
-photography is still open, per the project's "Not started" list (spec
-eventually wants up to 15 curated specifically for this album, separate
-from the storyboard's own gallery).
+frame / 5 instant frames / landscape pair) use the real prewedding photos
+in `public/photos/gallery/gallery-01..15.webp` (picked 2026-10-24 from the
+photographer's 43-photo set). Captions and section labels were removed
+on request (2026-10-24); the old `photo-01..11.webp` samples were deleted.
 
 Video slot renders a real `youtube-nocookie.com` embed once
 `WEDDING_DATA.youtubeVideoId` (lib/constants.ts) is filled in; until then

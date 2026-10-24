@@ -34,9 +34,11 @@ export const WEDDING_DATA = {
     recipient: 'Reinaldo',
     phone: '087887602355',
     address: 'Jalan Wimbledon Raya A1/09',
+    // Full address copied to the clipboard when the guest taps the address.
+    copyAddress: 'Perumahan Wimbledon Jababeka, Jalan Wimbledon Raya blok A1-09, Jatireja, Cikarang Timur, Kabupaten Bekasi, Jawa Barat, 17533',
   },
 
-  youtubeVideoId: '', // TODO: unlisted YouTube video ID for the Gallery video slot
+  youtubeVideoId: 'jmJl0czpjB8', // YouTube video for the Gallery video slot (https://youtu.be/jmJl0czpjB8)
 
   backgroundMusicUrl: '/audio/music.mp3',
 

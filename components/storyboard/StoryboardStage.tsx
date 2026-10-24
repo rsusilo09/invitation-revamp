@@ -4,6 +4,40 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SceneController, detectLayout, LAYOUT_SIZE, type Layout, type RefMap } from './SceneController';
 import { WEDDING_DATA } from '@/lib/constants';
 
+// Tap-to-copy for the gift card (account number / address). Falls back to
+// execCommand because navigator.clipboard needs a secure context (HTTPS),
+// and guests may open the dev/LAN build over plain http.
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+const COPY_BTN: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6, padding: 0, margin: 0,
+  border: 0, background: 'transparent', textAlign: 'left', cursor: 'pointer', font: 'inherit', color: 'inherit',
+  WebkitTapHighlightColor: 'transparent',
+};
+
 type Wish = { id: string; name: string; message: string; when: string };
 type RsvpState = {
   status: 'hadir' | 'tidak_hadir' | null;
@@ -75,6 +109,16 @@ export default function StoryboardStage({
 
   const [rsvp, setRsvp] = useState<RsvpState>(initialRsvp);
   const [showShortCode, setShowShortCode] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const doCopy = async (key: string, text: string) => {
+    if (!text) return;
+    if (await copyText(text)) {
+      setCopied(key);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(null), 1800);
+    }
+  };
   const [reopenCount, setReopenCount] = useState('1');
   const [reopening, setReopening] = useState(false);
 
@@ -361,9 +405,11 @@ export default function StoryboardStage({
         {/*
           Frame 07 photo slot (2026-09-26). The concept doc left this frame
           "menunggu satu foto baru" after the original couple photo moved to
-          frame 03. Uses photo-10 (the two of them standing side by side,
-          hand in hand — "akhirnya berdiri berdampingan"), cropped to 3:4 as
-          /photos/reunited-together.webp. Framed like the frame-03 cards.
+          frame 03. Uses prewedding photo 0C5A1190 (user's pick: the two of
+          them standing side by side, hand in hand, on a rock below the
+          waterfall — "akhirnya berdiri berdampingan"), cropped to 3:4 as /photos/reunited-together.webp
+          (2026-10-24; couple-reinaldo/eunike.webp likewise now come from
+          0C5A0703 / 0C5A0677 of the same set). Framed like the frame-03 cards.
           Sits in the scene area: below the shrunken monogram crest, above
           the frame-07 text (portrait) / centred in the left half
           (landscape). Opacity/transform driven from paint().
@@ -384,7 +430,7 @@ export default function StoryboardStage({
           }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/photos/reunited-together.webp" alt="Reinaldo and Eunike, side by side" style={{ display: 'block', width: '100%', aspectRatio: '3 / 4', objectFit: 'cover' }} />
+          <img src="/photos/reunited-together.webp" alt="Reinaldo and Eunike, side by side at the waterfall" style={{ display: 'block', width: '100%', aspectRatio: '3 / 4', objectFit: 'cover' }} />
         </div>
 
         <div
@@ -947,7 +993,7 @@ export default function StoryboardStage({
         >
           <div style={{ fontSize: 24, letterSpacing: '.34em', textTransform: 'uppercase', color: '#A08B62' }}>Gallery</div>
           <p style={{ margin: 0, maxWidth: 820, textAlign: 'center', fontFamily: "'Cormorant Garamond',serif", fontSize: 48, lineHeight: 1.4, color: '#5A4830' }}>
-            The small pieces of our journey — from the first meeting to this very day — gathered into one album.
+            A few moments from our prewedding — city streets, old halls, and a waterfall — gathered into one album.
           </p>
           <button
             onClick={() => c().onScrapOpen()}
@@ -1318,7 +1364,10 @@ export default function StoryboardStage({
                 <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: land ? 8 : 12, padding: land ? '26px 34px' : '36px 38px', background: 'rgba(253,250,243,.96)', border: '1px solid rgba(122,95,53,.26)', boxShadow: '0 24px 54px rgba(122,95,53,.18)' }}>
                   <span style={{ fontSize: 20, letterSpacing: '.22em', textTransform: 'uppercase', color: '#A08B62' }}>{acc.bank || 'Bank'}</span>
                   <span style={{ fontFamily: "'Cormorant Garamond',serif", fontStyle: 'italic', fontSize: land ? 26 : 30, color: '#8A6B3A' }}>Account Number</span>
-                  <span style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: land ? 44 : 60, lineHeight: 1.1, color: '#7A5F35', letterSpacing: '.04em', whiteSpace: 'nowrap' }}>{acc.accountNumber || '—'}</span>
+                  <button type="button" onClick={() => doCopy(`acc${i}`, acc.accountNumber.replace(/\s+/g, ''))} aria-label={`Copy account number ${acc.accountNumber}`} style={COPY_BTN}>
+                    <span style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: land ? 44 : 60, lineHeight: 1.1, color: '#7A5F35', letterSpacing: '.04em', whiteSpace: 'nowrap' }}>{acc.accountNumber || '—'}</span>
+                    <span style={{ fontFamily: "'Jost',sans-serif", fontSize: land ? 15 : 18, letterSpacing: '.18em', textTransform: 'uppercase', color: copied === `acc${i}` ? '#5E7A3A' : '#A08B62' }}>{copied === `acc${i}` ? 'Copied ✓' : 'Tap to copy'}</span>
+                  </button>
                   <span style={{ marginTop: land ? 6 : 10, fontFamily: "'Cormorant Garamond',serif", fontStyle: 'italic', fontSize: land ? 26 : 30, color: '#8A6B3A' }}>Account Name</span>
                   <span style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: land ? 32 : 38, color: '#5A4830' }}>{acc.accountName || '—'}</span>
                 </div>
@@ -1331,7 +1380,10 @@ export default function StoryboardStage({
                   {WEDDING_DATA.giftAddress.recipient || '—'} {WEDDING_DATA.giftAddress.phone ? `· ${WEDDING_DATA.giftAddress.phone}` : ''}
                 </span>
                 <span style={{ marginTop: land ? 6 : 10, fontFamily: "'Cormorant Garamond',serif", fontStyle: 'italic', fontSize: land ? 26 : 30, color: '#8A6B3A' }}>Address</span>
-                <span style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: land ? 32 : 36, lineHeight: 1.4, color: '#5A4830' }}>{WEDDING_DATA.giftAddress.address || '—'}</span>
+                <button type="button" onClick={() => doCopy('addr', WEDDING_DATA.giftAddress.copyAddress || WEDDING_DATA.giftAddress.address)} aria-label="Copy address" style={COPY_BTN}>
+                  <span style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: land ? 32 : 36, lineHeight: 1.4, color: '#5A4830' }}>{WEDDING_DATA.giftAddress.address || '—'}</span>
+                  <span style={{ fontFamily: "'Jost',sans-serif", fontSize: land ? 15 : 18, letterSpacing: '.18em', textTransform: 'uppercase', color: copied === 'addr' ? '#5E7A3A' : '#A08B62' }}>{copied === 'addr' ? 'Copied ✓' : 'Tap to copy'}</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1365,13 +1417,12 @@ export default function StoryboardStage({
             bar is driven imperatively from SceneController (onScrapScroll),
             matching this component's usual pattern of plain refs +
             imperative DOM writes rather than React state.
-            15 photo slots filled with this project's existing sample/couple
-            photos (photo-01..11.webp + couple-reinaldo/eunike.webp) —
-            photo-04.webp and photo-05.webp are reused a second time to fill
-            the 2 extra slots since only 13 source files exist on disk;
-            final curated scrapbook photos still TBD per the project's
-            "Not started" list; video slot renders a real YouTube embed once
-            WEDDING_DATA.youtubeVideoId is filled in, placeholder until then. */}
+            15 photo slots use the real prewedding photos
+            (public/photos/gallery/gallery-01..15.webp, picked 2026-10-24
+            from the photographer's 43-photo set: casual city, formal
+            heritage building, waterfall); objectPosition tweaks keep faces
+            in frame where a slot crops a portrait hard. Video slot embeds
+            WEDDING_DATA.youtubeVideoId. */}
         <div
           ref={bind('scrap')}
           onClick={() => c().onScrapClose()}
@@ -1448,42 +1499,42 @@ export default function StoryboardStage({
                   <div style={{ position: 'absolute', right: -39, top: -28, width: 205, height: 53, background: 'rgba(226,205,160,.55)', transform: 'rotate(7deg)' }} />
                   <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3' }}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/photos/photo-01.webp" alt="Our story begins" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+                    <img src="/photos/gallery/gallery-01.webp" alt="Our story begins" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
                   </div>
-                  <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, textAlign: 'center', fontFamily: "'Cormorant Garamond',serif", fontStyle: 'italic', fontSize: 44, color: '#6B573A' }}>opening photo</div>
                 </div>
 
                 {/* Portrait pair */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 44, alignItems: 'start' }}>
                   {[
-                    { src: '/photos/photo-02.webp', rot: 1.6, no: '02' },
-                    { src: '/photos/photo-03.webp', rot: -2, no: '03' },
+                    { src: '/photos/gallery/gallery-02.webp', rot: 1.6, no: '02' },
+                    { src: '/photos/gallery/gallery-03.webp', rot: -2, no: '03' },
                   ].map((p) => (
                     <div key={p.no} data-photo style={{ position: 'relative', minWidth: 0, minHeight: 0, padding: '22px 22px 72px', background: '#FFFDF7', boxShadow: '0 28px 60px rgba(90,72,48,.16)', transform: `rotate(${p.rot}deg)`, transition: 'transform .45s cubic-bezier(.2,.75,.2,1),box-shadow .45s', cursor: 'zoom-in' }}>
                       <div style={{ position: 'relative', width: '100%', aspectRatio: '3/4' }}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={p.src} alt="Portrait" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
                       </div>
-                      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 22, textAlign: 'center', fontSize: 25, letterSpacing: '.26em', color: '#A08B62' }}>{p.no}</div>
                     </div>
                   ))}
                 </div>
 
                 {/* Collage */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 38, padding: '55px 44px', background: 'repeating-linear-gradient(135deg,#F2EADA 0 16px,#EFE6D2 16px 32px)', border: '1px solid rgba(122,95,53,.2)', boxShadow: '0 28px 66px rgba(90,72,48,.1)' }}>
-                  <div style={{ fontSize: 25, letterSpacing: '.32em', textTransform: 'uppercase', color: '#A08B62' }}>collage</div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.2fr) minmax(0,1fr)', gridTemplateRows: '266px 266px', gap: 28 }}>
                     <div data-photo style={{ position: 'relative', gridRow: 'span 2', minWidth: 0, minHeight: 0, height: '100%', padding: 17, background: '#FFFDF7', boxShadow: '0 22px 50px rgba(90,72,48,.16)', transition: 'transform .45s cubic-bezier(.2,.75,.2,1),box-shadow .45s', cursor: 'zoom-in' }}>
                       <div style={{ position: 'relative', width: '100%', height: '100%' }}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src="/photos/couple-reinaldo.webp" alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+                        <img src="/photos/gallery/gallery-04.webp" alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 100%', display: 'block' }} draggable={false} />
                       </div>
                     </div>
-                    {['/photos/photo-04.webp', '/photos/photo-05.webp'].map((src) => (
+                    {[
+                      { src: '/photos/gallery/gallery-05.webp', pos: 'center 55%' },
+                      { src: '/photos/gallery/gallery-06.webp', pos: 'center 75%' },
+                    ].map(({ src, pos }) => (
                       <div key={src} data-photo style={{ position: 'relative', minWidth: 0, minHeight: 0, padding: 17, background: '#FFFDF7', boxShadow: '0 22px 50px rgba(90,72,48,.16)', transition: 'transform .45s cubic-bezier(.2,.75,.2,1),box-shadow .45s', cursor: 'zoom-in' }}>
                         <div style={{ position: 'relative', width: '100%', height: '100%' }}>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={src} alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+                          <img src={src} alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: pos, display: 'block' }} draggable={false} />
                         </div>
                       </div>
                     ))}
@@ -1491,53 +1542,42 @@ export default function StoryboardStage({
                   <div data-photo style={{ position: 'relative', minWidth: 0, minHeight: 0, padding: 17, background: '#FFFDF7', boxShadow: '0 22px 50px rgba(90,72,48,.16)', transition: 'transform .45s cubic-bezier(.2,.75,.2,1),box-shadow .45s', cursor: 'zoom-in' }}>
                     <div style={{ position: 'relative', width: '100%', aspectRatio: '2/1' }}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src="/photos/photo-06.webp" alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+                      <img src="/photos/gallery/gallery-07.webp" alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
                     </div>
                   </div>
                 </div>
 
                 {/* A favorite frame */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 44 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 32 }}>
-                    <span style={{ fontSize: 25, letterSpacing: '.32em', textTransform: 'uppercase', color: '#A08B62' }}>a favorite frame</span>
-                    <span style={{ flex: 1, height: 2, background: 'rgba(122,95,53,.25)' }} />
-                  </div>
                   <div data-photo style={{ position: 'relative', minWidth: 0, minHeight: 0, padding: '28px 28px 89px', background: '#FFFDF7', boxShadow: '0 38px 84px rgba(90,72,48,.2)', transform: 'rotate(1.1deg)', transition: 'transform .45s cubic-bezier(.2,.75,.2,1),box-shadow .45s', cursor: 'zoom-in' }}>
                     <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5' }}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src="/photos/couple-eunike.webp" alt="Our favorite" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+                      <img src="/photos/gallery/gallery-08.webp" alt="Our favorite" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
                     </div>
-                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, textAlign: 'center', fontFamily: "'Cormorant Garamond',serif", fontStyle: 'italic', fontSize: 44, color: '#6B573A' }}>favorite</div>
                   </div>
                 </div>
 
                 {/* Instant frames */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 44 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 32 }}>
-                    <span style={{ fontSize: 25, letterSpacing: '.32em', textTransform: 'uppercase', color: '#A08B62' }}>instant frames</span>
-                    <span style={{ flex: 1, height: 2, background: 'rgba(122,95,53,.25)' }} />
-                  </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 44, alignItems: 'start' }}>
                     {[
-                      { src: '/photos/photo-07.webp', rot: -3, no: '09' },
-                      { src: '/photos/photo-08.webp', rot: 2, no: '10' },
-                      { src: '/photos/photo-04.webp', rot: -2.4, no: '11' },
-                      { src: '/photos/photo-05.webp', rot: 1.8, no: '12' },
+                      { src: '/photos/gallery/gallery-09.webp', rot: -3, no: '09', pos: 'center 40%' },
+                      { src: '/photos/gallery/gallery-10.webp', rot: 2, no: '10', pos: 'center 50%' },
+                      { src: '/photos/gallery/gallery-11.webp', rot: -2.4, no: '11', pos: 'center 60%' },
+                      { src: '/photos/gallery/gallery-12.webp', rot: 1.8, no: '12', pos: 'center 70%' },
                     ].map((p) => (
                       <div key={p.no} data-photo style={{ position: 'relative', minWidth: 0, minHeight: 0, padding: '22px 22px 83px', background: '#FFFEFA', boxShadow: '0 28px 60px rgba(90,72,48,.18)', transform: `rotate(${p.rot}deg)`, transition: 'transform .45s cubic-bezier(.2,.75,.2,1),box-shadow .45s', cursor: 'zoom-in' }}>
                         <div style={{ position: 'relative', width: '100%', aspectRatio: '1/1' }}>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={p.src} alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+                          <img src={p.src} alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: p.pos, display: 'block' }} draggable={false} />
                         </div>
-                        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 25, textAlign: 'center', fontSize: 25, letterSpacing: '.26em', color: '#A08B62' }}>{p.no}</div>
                       </div>
                     ))}
                     <div data-photo style={{ position: 'relative', gridColumn: 'span 2', minWidth: 0, justifySelf: 'center', width: '62%', padding: '22px 22px 83px', background: '#FFFEFA', boxShadow: '0 28px 60px rgba(90,72,48,.18)', transform: 'rotate(-1.4deg)', transition: 'transform .45s cubic-bezier(.2,.75,.2,1),box-shadow .45s', cursor: 'zoom-in' }}>
                       <div style={{ position: 'relative', width: '100%', aspectRatio: '1/1' }}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src="/photos/photo-09.webp" alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} draggable={false} />
+                        <img src="/photos/gallery/gallery-13.webp" alt="Together" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 35%', display: 'block' }} draggable={false} />
                       </div>
-                      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 25, textAlign: 'center', fontSize: 25, letterSpacing: '.26em', color: '#A08B62' }}>13</div>
                     </div>
                   </div>
                 </div>
@@ -1545,8 +1585,8 @@ export default function StoryboardStage({
                 {/* Landscape pair */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 50 }}>
                   {[
-                    { src: '/photos/photo-10.webp', rot: -0.8 },
-                    { src: '/photos/photo-11.webp', rot: 1 },
+                    { src: '/photos/gallery/gallery-14.webp', rot: -0.8 },
+                    { src: '/photos/gallery/gallery-15.webp', rot: 1 },
                   ].map((p) => (
                     <div key={p.src} data-photo style={{ position: 'relative', minWidth: 0, minHeight: 0, padding: 22, background: '#FFFDF7', boxShadow: '0 32px 70px rgba(90,72,48,.16)', transform: `rotate(${p.rot}deg)`, transition: 'transform .45s cubic-bezier(.2,.75,.2,1),box-shadow .45s', cursor: 'zoom-in' }}>
                       <div style={{ position: 'relative', width: '100%', aspectRatio: '3/2' }}>
@@ -1559,10 +1599,6 @@ export default function StoryboardStage({
 
                 {/* Video slot */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 38 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 32 }}>
-                    <span style={{ fontSize: 25, letterSpacing: '.32em', textTransform: 'uppercase', color: '#A08B62' }}>short video</span>
-                    <span style={{ flex: 1, height: 2, background: 'rgba(122,95,53,.25)' }} />
-                  </div>
                   {WEDDING_DATA.youtubeVideoId ? (
                     <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', background: '#000', border: '1px solid rgba(122,95,53,.24)' }}>
                       <iframe
@@ -1610,7 +1646,7 @@ export default function StoryboardStage({
           style={{ position: 'absolute', inset: 0, background: 'rgba(20,15,10,.94)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 80, boxSizing: 'border-box', opacity: 0, pointerEvents: 'none', cursor: 'pointer', transition: 'opacity .35s ease' }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img ref={bind('lbImg') as unknown as React.Ref<HTMLImageElement>} src="/photos/photo-01.webp" alt="Gallery photo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', boxShadow: '0 40px 90px rgba(0,0,0,.6)' }} />
+          <img ref={bind('lbImg') as unknown as React.Ref<HTMLImageElement>} src="/photos/gallery/gallery-01.webp" alt="Gallery photo" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', boxShadow: '0 40px 90px rgba(0,0,0,.6)' }} />
           <span style={{ position: 'absolute', bottom: 120, fontSize: 22, letterSpacing: '.3em', textTransform: 'uppercase', color: 'rgba(240,228,200,.7)' }}>touch to close</span>
         </div>
 
@@ -1818,11 +1854,6 @@ export default function StoryboardStage({
               <div style={{ maxWidth: 720, fontSize: 25, lineHeight: 1.6, letterSpacing: '.04em', color: '#7A5F35', textAlign: 'center' }}>Should there be any error in the spelling of your name or title, we sincerely apologise.</div>
             </div>
             <div style={{ marginTop: 12, fontSize: 26, letterSpacing: '.4em', textTransform: 'uppercase', color: '#8A7248' }}>touch to open</div>
-          </div>
-
-          <div style={{ position: 'absolute', bottom: land ? 44 : 70, left: 0, right: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
-            <div style={{ fontSize: 22, letterSpacing: '.26em', textTransform: 'uppercase', color: 'rgba(122,95,53,.45)' }}>WebGL · frames 01–14 · 90-second cut</div>
-            <div style={{ fontSize: 20, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(122,95,53,.35)' }}>space = pause · ← → = scrub · R = restart</div>
           </div>
         </div>
       </div>
